@@ -17,7 +17,7 @@ N_CHANNELS = 4
 
 # Reward specification from Shah et al. (2022), Appendix C.2.
 # Keeping every reward in one place makes the sparse reward function explicit.
-APPLE_PICKUP_REWARD = 1.0
+APPLE_PICKUP_REWARD = 5.0
 UNSHIELDED_ATTACK_REWARD = -1.0
 SHIELDED_ENCOUNTER_REWARD = 0.0
 SHIELD_PICKUP_REWARD = 0.0
@@ -88,10 +88,10 @@ class MonsterGridworld:
         obs["shield_inventory"]: int in [0, max_inventory]
 
     Step order:
-        1. Monsters move once toward the agent.
-        2. With probability p, monsters move a second time.
-        3. Agent moves.
-        4. Agent picks up apple/shield on its destination cell.
+        1. Agent moves.
+        2. Agent picks up apple/shield on its destination cell.
+        3. Monsters move once toward the agent.
+        4. With probability p, monsters move a second time.
 
     Collision rule used here:
         - Monster attempts to enter agent cell:
@@ -152,12 +152,12 @@ class MonsterGridworld:
         reward = MOVEMENT_REWARD
         self._last_events = self._empty_step_events()
 
-        # Caption in the paper explicitly states that monsters move first.
+        # The agent acts and collects before monsters respond.
+        reward += self._move_agent(action)
+
         reward += self._move_monsters_once()
         if self.state.monsters and self.rng.random() < self.cfg.monster_double_move_prob:
             reward += self._move_monsters_once()
-
-        reward += self._move_agent(action)
         self.state.step_count += 1
 
         truncated = self.state.step_count >= self.cfg.episode_length

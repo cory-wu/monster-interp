@@ -79,7 +79,7 @@ def train(config: TrainingConfig) -> Path:
         raise FileExistsError(f"refusing to overwrite existing run: {run_dir}")
     (run_dir / "config.json").write_text(json.dumps(asdict(config), indent=2) + "\n")
 
-    env_config = MonsterGridworldConfig(episode_length=config.episode_length)
+    env_config = MonsterGridworldConfig(episode_length=config.episode_length, n_apples=25)
     model = MonsterActorCritic().to(device)
     target_model = copy.deepcopy(model).to(device).eval()
     for parameter in target_model.parameters():
