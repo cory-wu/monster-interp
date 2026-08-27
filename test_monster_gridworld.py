@@ -2,9 +2,11 @@ import numpy as np
 
 from monster_gridworld import (
     APPLE,
+    APPLE_PICKUP_REWARD,
     MONSTER,
     DOWN,
     RIGHT,
+    UNSHIELDED_ATTACK_REWARD,
     UP,
     MonsterGridworld,
     MonsterGridworldConfig,
@@ -49,7 +51,7 @@ def test_apple_gives_reward_and_respawns():
         )
     )
     _, reward, _, _, info = env.step(RIGHT)
-    assert reward == 1.0
+    assert reward == APPLE_PICKUP_REWARD
     assert env.state.agent == (5, 6)
     assert len(env.state.apples) == 1
     assert info["n_apples_on_grid"] == 1
@@ -120,15 +122,16 @@ def test_shielded_monster_attack_consumes_shield_and_monster():
     env.set_state(
         State(
             agent=(5, 5),
-            monsters={(5, 4)},
+            monsters={(5, 7)},
             shields_on_grid=set(),
             apples=set(),
             shield_inventory=1,
         )
     )
-    # Monster moves first into the agent and is destroyed. Agent then moves down.
-    _, reward, _, _, info = env.step(DOWN)
+    # Agent moves right first, then the adjacent monster attacks.
+    _, reward, _, _, info = env.step(RIGHT)
     assert reward == 0.0
+    assert env.state.agent == (5, 6)
     assert info["n_monsters"] == 0
     assert info["shield_inventory"] == 0
     assert info["monsters_destroyed"] == 1
@@ -139,14 +142,15 @@ def test_unshielded_monster_attack_penalizes_but_monster_survives():
     env.set_state(
         State(
             agent=(5, 5),
-            monsters={(5, 4)},
+            monsters={(5, 7)},
             shields_on_grid=set(),
             apples=set(),
             shield_inventory=0,
         )
     )
-    _, reward, _, _, info = env.step(DOWN)
+    _, reward, _, _, info = env.step(RIGHT)
     assert reward == -1.0
+    assert env.state.agent == (5, 6)
     assert info["n_monsters"] == 1
     assert info["unshielded_attacks"] == 1
 
@@ -156,7 +160,7 @@ def test_each_unshielded_attack_is_penalized():
     env.set_state(
         State(
             agent=(5, 5),
-            monsters={(5, 4), (5, 6)},
+            monsters={(6, 4), (6, 6)},
             shields_on_grid=set(),
             apples=set(),
             shield_inventory=0,
@@ -180,14 +184,14 @@ def test_same_monster_attacking_twice_costs_two_reward():
     env.set_state(
         State(
             agent=(5, 5),
-            monsters={(5, 4)},
+            monsters={(5, 7)},
             shields_on_grid=set(),
             apples=set(),
             shield_inventory=0,
         )
     )
 
-    _, reward, _, _, info = env.step(DOWN)
+    _, reward, _, _, info = env.step(RIGHT)
 
     assert reward == -2.0
     assert info["n_monsters"] == 1
@@ -198,7 +202,7 @@ def test_one_shield_only_blocks_one_of_two_attacks():
     env.set_state(
         State(
             agent=(5, 5),
-            monsters={(5, 4), (5, 6)},
+            monsters={(6, 4), (6, 6)},
             shields_on_grid=set(),
             apples=set(),
             shield_inventory=1,
@@ -217,7 +221,7 @@ def test_attack_and_apple_rewards_add_within_a_step():
     env.set_state(
         State(
             agent=(5, 5),
-            monsters={(5, 4)},
+            monsters={(6, 6)},
             shields_on_grid=set(),
             apples={(6, 5)},
             shield_inventory=0,
@@ -226,8 +230,30 @@ def test_attack_and_apple_rewards_add_within_a_step():
 
     _, reward, _, _, info = env.step(DOWN)
 
-    assert reward == 0.0  # -1 for the attack, then +1 for the apple.
+    assert reward == APPLE_PICKUP_REWARD + UNSHIELDED_ATTACK_REWARD
     assert info["n_apples_on_grid"] == 0
+
+
+def test_agent_collects_shield_before_monsters_move():
+    env = env_no_extra_moves(respawn_apples=False, respawn_shields=False)
+    env.set_state(
+        State(
+            agent=(5, 5),
+            monsters={(5, 7)},
+            shields_on_grid={(5, 6)},
+            apples=set(),
+            shield_inventory=0,
+        )
+    )
+
+    _, reward, _, _, info = env.step(RIGHT)
+
+    assert reward == 0.0
+    assert env.state.agent == (5, 6)
+    assert info["shields_collected"] == 1
+    assert info["monsters_destroyed"] == 1
+    assert info["shield_inventory"] == 0
+    assert info["n_monsters"] == 0
 
 
 def test_counterfactual_remove_monsters():
