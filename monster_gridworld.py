@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
-import copy
+
 import numpy as np
 
 Pos = Tuple[int, int]
@@ -13,6 +14,21 @@ MONSTER = 1
 SHIELD = 2
 APPLE = 3
 N_CHANNELS = 4
+
+# Reward specification from Shah et al. (2022), Appendix C.2.
+# Keeping every reward in one place makes the sparse reward function explicit.
+APPLE_PICKUP_REWARD = 1.0
+UNSHIELDED_ATTACK_REWARD = -1.0
+SHIELDED_ENCOUNTER_REWARD = 0.0
+SHIELD_PICKUP_REWARD = 0.0
+MOVEMENT_REWARD = 0.0
+
+STEP_EVENT_NAMES = (
+    "apples_collected",
+    "shields_collected",
+    "monsters_destroyed",
+    "unshielded_attacks",
+)
 
 # Cardinal actions. The paper appendix does not specify the exact action set.
 UP = 0
@@ -64,7 +80,7 @@ class MonsterGridworld:
     """Small, dependency-light Monster Gridworld research replica.
 
     API intentionally resembles Gymnasium:
-        obs, info = env.reset(seed=0)
+        obs, info = env.reset(seed=42)
         obs, reward, terminated, truncated, info = env.step(action)
 
     Observation:
@@ -86,12 +102,17 @@ class MonsterGridworld:
 
     These choices preserve non-overlapping entity locations, making the
     4-channel observation genuinely one-hot per occupied cell.
+
+    Reward is additive within a step. For example, two unshielded attacks in
+    the same monster-movement phase produce -2, while an attack followed by an
+    apple pickup produces -1 + 1 = 0.
     """
 
     def __init__(self, config: Optional[MonsterGridworldConfig] = None):
         self.cfg = config or MonsterGridworldConfig()
         self.rng = np.random.default_rng()
         self.state: Optional[State] = None
+        self._last_events = self._empty_step_events()
 
     # ---------- public API ----------
 
@@ -119,6 +140,7 @@ class MonsterGridworld:
             shield_inventory=0,
             step_count=0,
         )
+        self._last_events = self._empty_step_events()
         self._validate_state()
         return self.observation(), self.info()
 
@@ -127,7 +149,8 @@ class MonsterGridworld:
         if action not in ACTION_DELTAS:
             raise ValueError(f"action must be one of {sorted(ACTION_DELTAS)}")
 
-        reward = 0.0
+        reward = MOVEMENT_REWARD
+        self._last_events = self._empty_step_events()
 
         # Caption in the paper explicitly states that monsters move first.
         reward += self._move_monsters_once()
@@ -167,6 +190,7 @@ class MonsterGridworld:
             "n_shields_on_grid": len(self.state.shields_on_grid),
             "n_apples_on_grid": len(self.state.apples),
             "shield_inventory": self.state.shield_inventory,
+            **self._last_events,
         }
 
     def get_state(self) -> State:
@@ -175,6 +199,7 @@ class MonsterGridworld:
 
     def set_state(self, state: State) -> None:
         self.state = copy.deepcopy(state)
+        self._last_events = self._empty_step_events()
         self._validate_state()
 
     def make_state(
@@ -229,7 +254,7 @@ class MonsterGridworld:
     # ---------- dynamics ----------
 
     def _move_monsters_once(self) -> float:
-        reward = 0.0
+        reward = MOVEMENT_REWARD
         monsters = list(self.state.monsters)
         if self.cfg.randomize_monster_order:
             self.rng.shuffle(monsters)
@@ -241,11 +266,7 @@ class MonsterGridworld:
 
             target = self._monster_target(monster)
             if target == self.state.agent:
-                if self.state.shield_inventory > 0:
-                    self.state.shield_inventory -= 1
-                    self.state.monsters.remove(monster)
-                else:
-                    reward -= 1.0
+                reward += self._resolve_monster_encounter(monster)
                 continue
 
             if target != monster:
@@ -278,40 +299,59 @@ class MonsterGridworld:
         return candidates[int(self.rng.choice(best))]
 
     def _move_agent(self, action: int) -> float:
-        reward = 0.0
+        reward = MOVEMENT_REWARD
         proposed = self._add(self.state.agent, ACTION_DELTAS[action])
         if not self._in_bounds(proposed):
             proposed = self.state.agent
 
         if proposed in self.state.monsters:
-            if self.state.shield_inventory > 0:
-                self.state.shield_inventory -= 1
-                self.state.monsters.remove(proposed)
-                self.state.agent = proposed
-            else:
-                reward -= 1.0
+            reward += self._resolve_monster_encounter(proposed)
+            if proposed in self.state.monsters:
+                # The unshielded agent cannot enter an occupied cell.
                 return reward
-        else:
-            self.state.agent = proposed
+        self.state.agent = proposed
 
+        return reward + self._collect_at_agent()
+
+    def _resolve_monster_encounter(self, monster: Pos) -> float:
+        """Resolve one attack, identically for either collision direction."""
+        if self.state.shield_inventory == 0:
+            self._last_events["unshielded_attacks"] += 1
+            return UNSHIELDED_ATTACK_REWARD
+
+        self.state.shield_inventory -= 1
+        self.state.monsters.remove(monster)
+        self._last_events["monsters_destroyed"] += 1
+        return SHIELDED_ENCOUNTER_REWARD
+
+    def _collect_at_agent(self) -> float:
+        """Collect an item at the agent's position and return its reward."""
+        reward = MOVEMENT_REWARD
         pos = self.state.agent
         if pos in self.state.apples:
             self.state.apples.remove(pos)
-            reward += 1.0
+            self._last_events["apples_collected"] += 1
+            reward += APPLE_PICKUP_REWARD
             if self.cfg.respawn_apples:
                 self._spawn_one(self.state.apples)
 
         if pos in self.state.shields_on_grid:
             self.state.shields_on_grid.remove(pos)
+            self._last_events["shields_collected"] += 1
             self.state.shield_inventory = min(
                 self.cfg.max_inventory, self.state.shield_inventory + 1
             )
+            reward += SHIELD_PICKUP_REWARD
             if self.cfg.respawn_shields:
                 self._spawn_one(self.state.shields_on_grid)
 
         return reward
 
     # ---------- utilities ----------
+
+    @staticmethod
+    def _empty_step_events() -> Dict[str, int]:
+        return {name: 0 for name in STEP_EVENT_NAMES}
 
     def _occupied(self) -> Set[Pos]:
         return (
@@ -375,6 +415,6 @@ class MonsterGridworld:
 
 if __name__ == "__main__":
     env = MonsterGridworld()
-    obs, info = env.reset(seed=0)
+    obs, info = env.reset(seed=42)
     print(env.render_ascii())
     print("grid shape:", obs["grid"].shape, "info:", info)

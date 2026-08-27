@@ -1,4 +1,3 @@
-import time
 import numpy as np
 
 from monster_gridworld import MonsterGridworld, MonsterGridworldConfig
@@ -18,9 +17,9 @@ env = MonsterGridworld(
     )
 )
 
-rng = np.random.default_rng(0)
+rng = np.random.default_rng(42)
 
-obs, info = env.reset(seed=0)
+obs, info = env.reset(seed=42)
 
 print("Initial state")
 print(env.render_ascii())
